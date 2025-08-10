@@ -1,5 +1,5 @@
-# 使用 Node.js 18 Alpine 作為基礎鏡像
-FROM node:18-alpine
+# 開發階段
+FROM node:18-alpine AS development
 
 # 設置工作目錄
 WORKDIR /app
@@ -7,7 +7,32 @@ WORKDIR /app
 # 複製 package.json 和 package-lock.json
 COPY package*.json ./
 
-# 安裝依賴
+# 安裝所有依賴（包括開發依賴）
+RUN npm ci
+
+# 複製源代碼
+COPY . .
+
+# 暴露端口
+EXPOSE 8080
+
+# 健康檢查
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD node healthcheck.js
+
+# 使用 nodemon 啟動開發服務器
+CMD ["npm", "run", "dev"]
+
+# 生產階段
+FROM node:18-alpine AS production
+
+# 設置工作目錄
+WORKDIR /app
+
+# 複製 package.json 和 package-lock.json
+COPY package*.json ./
+
+# 安裝生產依賴
 RUN npm ci --only=production
 
 # 複製源代碼

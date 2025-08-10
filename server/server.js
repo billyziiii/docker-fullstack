@@ -29,6 +29,11 @@ app.use('/api/', limiter);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
+// 🔥 實時同步演示 - 後端自動重啟功能 (已更新！)
+const SYNC_DEMO_MESSAGE = 'Docker Volume 後端自動重啟正在運行！修改已生效！';
+console.log('🔥', SYNC_DEMO_MESSAGE, new Date().toISOString());
+console.log('🎯 nodemon 檢測到文件變化，服務器自動重啟中...');
+
 // 數據庫連接
 const { Pool } = require('pg');
 const redis = require('redis');
@@ -313,8 +318,8 @@ app.post('/api/game/slot', authenticateToken, async (req, res) => {
       });
     }
 
-    // 生成拉霸機結果 (3個轉輪，每個有7種符號)
-    const symbols = ['🍒', '🍋', '🍊', '🍇', '🔔', '⭐', '💎'];
+    // 生成拉霸機結果 (3個轉輪，每個有7種F1符號)
+    const symbols = ['⛽', '🛞', '🔧', '⚡', '🏁', '🏆', '🏎️'];
     const result = [
       symbols[Math.floor(Math.random() * symbols.length)],
       symbols[Math.floor(Math.random() * symbols.length)],
@@ -326,13 +331,13 @@ app.post('/api/game/slot', authenticateToken, async (req, res) => {
     if (result[0] === result[1] && result[1] === result[2]) {
       // 三個相同
       switch (result[0]) {
-        case '💎': multiplier = 10; break;
-        case '⭐': multiplier = 8; break;
-        case '🔔': multiplier = 6; break;
-        case '🍇': multiplier = 4; break;
-        case '🍊': multiplier = 3; break;
-        case '🍋': multiplier = 2; break;
-        case '🍒': multiplier = 1.5; break;
+        case '🏎️': multiplier = 10; break;  // F1賽車 (冠軍)
+        case '🏆': multiplier = 8; break;   // 冠軍獎盃 (頒獎台)
+        case '🏁': multiplier = 6; break;   // 格子旗
+        case '⚡': multiplier = 4; break;   // 閃電 (極速)
+        case '🔧': multiplier = 3; break;   // 扳手 (維修)
+        case '🛞': multiplier = 2; break;   // 輪胎
+        case '⛽': multiplier = 1.5; break; // 燃料
       }
     } else if (result[0] === result[1] || result[1] === result[2] || result[0] === result[2]) {
       // 兩個相同

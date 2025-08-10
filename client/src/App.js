@@ -24,6 +24,9 @@ function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  
+  // 🔥 實時同步演示 - 這個修改會立即在瀏覽器中顯示！
+  const [syncDemo] = useState('Docker Volume 實時同步正在運行！');
 
   useEffect(() => {
     // 檢查是否有保存的 token
@@ -90,6 +93,19 @@ function App() {
 
   return (
     <div className="App">
+      {/* 🔥 實時同步演示橫幅 */}
+      <div style={{
+        backgroundColor: '#ff6b35',
+        color: 'white',
+        padding: '10px',
+        textAlign: 'center',
+        fontWeight: 'bold',
+        fontSize: '16px',
+        boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+      }}>
+        🔥 {syncDemo} - 修改代碼即時生效！
+      </div>
+      
       {currentPage === 'login' && (
         <LoginPage 
           onLogin={handleLogin}
@@ -278,7 +294,7 @@ function GamePage({ user, onLogout, onUpdateBalance }) {
   return (
     <div className="game-container">
       <header className="game-header">
-        <h1>🎰 拉霸機遊戲</h1>
+        <h1>🏎️ F1 RACING SLOT</h1>
         <div className="user-info">
           <span>歡迎, {user.username}!</span>
           <span className="balance">餘額: {user.balance} 金幣</span>
@@ -297,9 +313,9 @@ function GamePage({ user, onLogout, onUpdateBalance }) {
               </div>
             ) : (
               <div className="slot-result">
-                <div className="slot-symbol">🎰</div>
-                <div className="slot-symbol">🎰</div>
-                <div className="slot-symbol">🎰</div>
+                <div className="slot-symbol">🏎️</div>
+                <div className="slot-symbol">🏎️</div>
+                <div className="slot-symbol">🏎️</div>
               </div>
             )}
           </div>
@@ -336,16 +352,16 @@ function GamePage({ user, onLogout, onUpdateBalance }) {
         </div>
 
         <div className="game-info">
-          <h3>🎯 遊戲規則</h3>
+          <h3>🏁 F1積分規則</h3>
           <ul>
-            <li>💎 三個相同: 10倍</li>
-            <li>⭐ 三個相同: 8倍</li>
-            <li>🔔 三個相同: 6倍</li>
-            <li>🍇 三個相同: 4倍</li>
-            <li>🍊 三個相同: 3倍</li>
-            <li>🍋 三個相同: 2倍</li>
-            <li>🍒 三個相同: 1.5倍</li>
-            <li>兩個相同: 0.5倍</li>
+            <li>🏎️ 三個相同: 10倍 (冠軍)</li>
+            <li>🏆 三個相同: 8倍 (頒獎台)</li>
+            <li>🏁 三個相同: 6倍 (格子旗)</li>
+            <li>⚡ 三個相同: 4倍 (極速)</li>
+            <li>🔧 三個相同: 3倍 (維修)</li>
+            <li>🛞 三個相同: 2倍 (輪胎)</li>
+            <li>⛽ 三個相同: 1.5倍 (燃料)</li>
+            <li>兩個相同: 0.5倍 (積分)</li>
           </ul>
           
 
