@@ -40,7 +40,7 @@ const SYNC_DEMO_MESSAGE = 'Docker Volume 後端自動重啟正在運行！修改
 console.log('🔥', SYNC_DEMO_MESSAGE, new Date().toISOString());
 console.log('🎯 nodemon 檢測到文件變化，服務器自動重啟中...');
 
-// 數據庫連接 (移除 Redis)
+// 數據庫連接
 const { Pool } = require('pg');
 
 // PostgreSQL 連接
@@ -50,125 +50,6 @@ const pool = new Pool({
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 2000,
 });
-
-// PostgreSQL 緩存類 (替代 Redis)
-class PostgreSQLCache {
-  constructor(pool) {
-    this.pool = pool;
-    this.startCleanupInterval();
-    console.log('✅ PostgreSQL Cache initialized');
-  }
-
-  startCleanupInterval() {
-    // 每 5 分鐘清理過期數據
-    setInterval(async () => {
-      try {
-        const result = await this.pool.query('SELECT cleanup_expired_cache() as deleted_count');
-        const deletedCount = result.rows[0].deleted_count;
-        if (deletedCount > 0) {
-          console.log(`🧹 Cleaned up ${deletedCount} expired cache entries`);
-        }
-      } catch (err) {
-        console.error('❌ Cache cleanup error:', err);
-      }
-    }, 5 * 60 * 1000);
-  }
-
-  async set(key, value, ttl = null) {
-    try {
-      const expiresAt = ttl ? new Date(Date.now() + ttl * 1000) : null;
-      await this.pool.query(
-        'INSERT INTO cache (key, value, expires_at) VALUES ($1, $2, $3) ON CONFLICT (key) DO UPDATE SET value = $2, expires_at = $3, created_at = CURRENT_TIMESTAMP',
-        [key, JSON.stringify(value), expiresAt]
-      );
-      console.log(`📝 Cache SET: ${key} (TTL: ${ttl || 'never'})`);
-    } catch (err) {
-      console.error('❌ Cache SET error:', err);
-      throw err;
-    }
-  }
-
-  async get(key) {
-    try {
-      const result = await this.pool.query(
-        'SELECT value FROM cache WHERE key = $1 AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)',
-        [key]
-      );
-      const value = result.rows.length > 0 ? JSON.parse(result.rows[0].value) : null;
-      console.log(`📖 Cache GET: ${key} = ${value ? 'HIT' : 'MISS'}`);
-      return value;
-    } catch (err) {
-      console.error('❌ Cache GET error:', err);
-      return null;
-    }
-  }
-
-  async delete(key) {
-    try {
-      const result = await this.pool.query('DELETE FROM cache WHERE key = $1', [key]);
-      console.log(`🗑️ Cache DELETE: ${key} (${result.rowCount} rows affected)`);
-      return result.rowCount > 0;
-    } catch (err) {
-      console.error('❌ Cache DELETE error:', err);
-      return false;
-    }
-  }
-
-  async has(key) {
-    try {
-      const result = await this.pool.query(
-        'SELECT 1 FROM cache WHERE key = $1 AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)',
-        [key]
-      );
-      return result.rows.length > 0;
-    } catch (err) {
-      console.error('❌ Cache HAS error:', err);
-      return false;
-    }
-  }
-
-  async clear() {
-    try {
-      const result = await this.pool.query('DELETE FROM cache');
-      console.log(`🧹 Cache CLEAR: ${result.rowCount} entries removed`);
-      return result.rowCount;
-    } catch (err) {
-      console.error('❌ Cache CLEAR error:', err);
-      return 0;
-    }
-  }
-
-  // 模擬 Redis ping
-  async ping() {
-    try {
-      await this.pool.query('SELECT 1');
-      return 'PONG';
-    } catch (err) {
-      throw new Error('Cache ping failed: ' + err.message);
-    }
-  }
-
-  // 獲取緩存統計信息
-  async getStats() {
-    try {
-      const result = await this.pool.query(`
-        SELECT 
-          COUNT(*) as total_entries,
-          COUNT(CASE WHEN expires_at IS NULL THEN 1 END) as permanent_entries,
-          COUNT(CASE WHEN expires_at > CURRENT_TIMESTAMP THEN 1 END) as active_entries,
-          COUNT(CASE WHEN expires_at <= CURRENT_TIMESTAMP THEN 1 END) as expired_entries
-        FROM cache
-      `);
-      return result.rows[0];
-    } catch (err) {
-      console.error('❌ Cache stats error:', err);
-      return null;
-    }
-  }
-}
-
-// 創建緩存實例
-const pgCache = new PostgreSQLCache(pool);
 
 // 測試數據庫連接
 pool.connect((err, client, release) => {
@@ -186,7 +67,7 @@ app.get('/', (req, res) => {
     message: '🐳 Docker Fullstack API Server',
     version: '1.0.0',
     status: 'running',
-    cache: 'PostgreSQL',
+    cache: 'disabled',
     timestamp: new Date().toISOString()
   });
 });
@@ -197,32 +78,25 @@ app.get('/api', (req, res) => {
     message: '🐳 Docker Fullstack API Server',
     version: '1.0.0',
     status: 'running',
-    cache: 'PostgreSQL',
+    cache: 'disabled',
     timestamp: new Date().toISOString()
   });
 });
 
-// 健康檢查端點 (移除 Redis 檢查)
+// 健康檢查端點
 app.get('/api/health', async (req, res) => {
   try {
     // 檢查 PostgreSQL 連接
     const pgResult = await pool.query('SELECT NOW()');
-    
-    // 檢查緩存連接
-    await pgCache.ping();
-    
-    // 獲取緩存統計
-    const cacheStats = await pgCache.getStats();
     
     res.json({
       status: 'healthy',
       message: 'All services are running',
       services: {
         database: 'connected',
-        cache: 'connected (PostgreSQL)',
+        cache: 'disabled',
         server: 'running'
       },
-      cache_stats: cacheStats,
       timestamp: pgResult.rows[0].now
     });
   } catch (error) {
@@ -232,39 +106,6 @@ app.get('/api/health', async (req, res) => {
       message: 'Service check failed',
       error: error.message,
       timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// 緩存管理 API
-app.get('/api/cache/stats', async (req, res) => {
-  try {
-    const stats = await pgCache.getStats();
-    res.json({
-      success: true,
-      stats: stats
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Failed to get cache stats',
-      error: error.message
-    });
-  }
-});
-
-app.delete('/api/cache/clear', async (req, res) => {
-  try {
-    const deletedCount = await pgCache.clear();
-    res.json({
-      success: true,
-      message: `Cleared ${deletedCount} cache entries`
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Failed to clear cache',
-      error: error.message
     });
   }
 });
@@ -308,13 +149,6 @@ app.post('/api/auth/register', async (req, res) => {
     );
 
     const user = result.rows[0];
-    
-    // 緩存用戶信息
-    await pgCache.set(`user:${user.id}`, {
-      id: user.id,
-      username: user.username,
-      balance: user.balance
-    }, 3600); // 1小時過期
 
     res.json({
       success: true,
@@ -347,27 +181,16 @@ app.post('/api/auth/login', async (req, res) => {
       });
     }
 
-    // 先檢查緩存
-    const cachedUser = await pgCache.get(`login:${username}`);
-    let user;
-    
-    if (cachedUser) {
-      user = cachedUser;
-      console.log('🚀 User login from cache');
-    } else {
-      // 從數據庫查詢用戶
-      const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
-      if (result.rows.length === 0) {
-        return res.status(401).json({
-          success: false,
-          message: '用戶名或密碼錯誤'
-        });
-      }
-      user = result.rows[0];
-      
-      // 緩存用戶登入信息
-      await pgCache.set(`login:${username}`, user, 1800); // 30分鐘過期
+    // 從數據庫查詢用戶
+    const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+    if (result.rows.length === 0) {
+      return res.status(401).json({
+        success: false,
+        message: '用戶名或密碼錯誤'
+      });
     }
+    
+    const user = result.rows[0];
 
     // 驗證密碼
     const isValidPassword = await bcrypt.compare(password, user.password);
@@ -384,13 +207,6 @@ app.post('/api/auth/login', async (req, res) => {
       process.env.JWT_SECRET || 'your-secret-key',
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
-
-    // 緩存用戶會話
-    await pgCache.set(`session:${user.id}`, {
-      userId: user.id,
-      username: user.username,
-      loginTime: new Date().toISOString()
-    }, 7 * 24 * 3600); // 7天過期
 
     res.json({
       success: true,
@@ -426,16 +242,6 @@ const authenticateToken = async (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
-    
-    // 檢查會話緩存
-    const session = await pgCache.get(`session:${decoded.userId}`);
-    if (!session) {
-      return res.status(401).json({
-        success: false,
-        message: '會話已過期，請重新登入'
-      });
-    }
-    
     req.user = decoded;
     next();
   } catch (error) {
@@ -449,31 +255,19 @@ const authenticateToken = async (req, res, next) => {
 // 獲取用戶資料 API
 app.get('/api/user/profile', authenticateToken, async (req, res) => {
   try {
-    // 先檢查緩存
-    const cachedUser = await pgCache.get(`user:${req.user.userId}`);
-    let user;
+    const result = await pool.query(
+      'SELECT id, username, balance, created_at FROM users WHERE id = $1',
+      [req.user.userId]
+    );
     
-    if (cachedUser) {
-      user = cachedUser;
-      console.log('🚀 User profile from cache');
-    } else {
-      const result = await pool.query(
-        'SELECT id, username, balance, created_at FROM users WHERE id = $1',
-        [req.user.userId]
-      );
-      
-      if (result.rows.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message: '用戶不存在'
-        });
-      }
-      
-      user = result.rows[0];
-      
-      // 緩存用戶資料
-      await pgCache.set(`user:${user.id}`, user, 3600); // 1小時過期
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: '用戶不存在'
+      });
     }
+    
+    const user = result.rows[0];
 
     res.json({
       success: true,
@@ -544,18 +338,6 @@ app.post('/api/game/slot', authenticateToken, async (req, res) => {
       [userId, 'slot', betAmount, winAmount, JSON.stringify(result)]
     );
 
-    // 更新緩存中的用戶餘額
-    await pgCache.delete(`user:${userId}`);
-    
-    // 緩存遊戲結果
-    await pgCache.set(`game:${userId}:latest`, {
-      result,
-      betAmount,
-      winAmount,
-      newBalance,
-      timestamp: new Date().toISOString()
-    }, 300); // 5分鐘過期
-
     res.json({
       success: true,
       result,
@@ -581,19 +363,6 @@ app.get('/api/game/history', authenticateToken, async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
     const offset = parseInt(req.query.offset) || 0;
     
-    // 先檢查緩存
-    const cacheKey = `history:${userId}:${limit}:${offset}`;
-    const cachedHistory = await pgCache.get(cacheKey);
-    
-    if (cachedHistory) {
-      console.log('🚀 Game history from cache');
-      return res.json({
-        success: true,
-        history: cachedHistory.history,
-        total: cachedHistory.total
-      });
-    }
-    
     // 從數據庫獲取
     const historyResult = await pool.query(
       'SELECT * FROM game_history WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3',
@@ -607,9 +376,6 @@ app.get('/api/game/history', authenticateToken, async (req, res) => {
     
     const history = historyResult.rows;
     const total = parseInt(countResult.rows[0].count);
-    
-    // 緩存結果
-    await pgCache.set(cacheKey, { history, total }, 300); // 5分鐘過期
     
     res.json({
       success: true,
@@ -651,7 +417,7 @@ app.use((error, req, res, next) => {
   });
 });
 
-// 優雅關閉 (移除 Redis)
+// 優雅關閉
 process.on('SIGTERM', async () => {
   console.log('SIGTERM received, shutting down gracefully');
   await pool.end();
@@ -670,5 +436,5 @@ process.on('SIGINT', async () => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server is running on port ${PORT}`);
   console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🗄️ Cache: PostgreSQL`);
+  console.log(`🗄️ Cache: disabled`);
 });
