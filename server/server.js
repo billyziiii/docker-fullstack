@@ -52,21 +52,69 @@ const pool = new Pool({
   connectionTimeoutMillis: 2000,
 });
 
-// Redis 連接
+// Redis URL 獲取函數
+function getRedisUrl() {
+  const redisUrl = process.env.REDIS_URL;
+  
+  if (redisUrl) {
+    return redisUrl;
+  }
+  
+  if (process.env.NODE_ENV === 'production') {
+    console.error('❌ REDIS_URL environment variable is required in production');
+    process.exit(1);
+  }
+  
+  console.warn('⚠️ Using default Redis URL for development');
+  return 'redis://redis:6379';
+}
+
+// Redis 連接改進版本
+const redisUrl = getRedisUrl();
+console.log('🔗 Connecting to Redis:', redisUrl.replace(/\/\/.*@/, '//***:***@'));
+
 const redisClient = redis.createClient({
-  url: process.env.REDIS_URL || 'redis://redis:6379'
+  url: redisUrl,
+  retry_strategy: (options) => {
+    if (options.error && options.error.code === 'ECONNREFUSED') {
+      console.error('❌ Redis server refused connection');
+    }
+    if (options.total_retry_time > 1000 * 60 * 60) {
+      console.error('❌ Redis retry time exhausted');
+      return new Error('Retry time exhausted');
+    }
+    if (options.attempt > 10) {
+      console.error('❌ Redis retry attempts exhausted');
+      return undefined;
+    }
+    return Math.min(options.attempt * 100, 3000);
+  }
 });
 
 redisClient.on('error', (err) => {
-  console.error('Redis Client Error:', err);
+  console.error('❌ Redis Client Error:', err);
+  console.error('🔍 Redis URL:', redisUrl.replace(/\/\/.*@/, '//***:***@'));
 });
 
 redisClient.on('connect', () => {
   console.log('✅ Connected to Redis');
 });
 
+redisClient.on('ready', () => {
+  console.log('🚀 Redis client ready');
+});
+
+redisClient.on('end', () => {
+  console.log('🔌 Redis connection ended');
+});
+
 // 連接到 Redis
-redisClient.connect().catch(console.error);
+redisClient.connect().catch((err) => {
+  console.error('❌ Failed to connect to Redis:', err);
+  if (process.env.NODE_ENV === 'production') {
+    process.exit(1);
+  }
+});
 
 // 測試數據庫連接
 pool.connect((err, client, release) => {
@@ -467,3 +515,28 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server is running on port ${PORT}`);
   console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
 });
+
+// 刪除或註釋掉以下重複的 Redis 連接代碼
+/*
+// Redis 連接重試函數
+const connectRedis = async (retries = 5, delay = 2000) => {
+  for (let i = 0; i < retries; i++) {
+    try {
+      await redisClient.connect();
+      console.log('✅ Connected to Redis');
+      return;
+    } catch (err) {
+      console.error(`❌ Redis connection attempt ${i + 1} failed:`, err.message);
+      if (i === retries - 1) {
+        console.error('🚨 All Redis connection attempts failed');
+        throw err;
+      }
+      console.log(`⏳ Retrying in ${delay}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+};
+
+// 使用重試機制連接
+connectRedis().catch(console.error);
+*/

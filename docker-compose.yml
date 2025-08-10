@@ -3,9 +3,11 @@ version: "3.8"
 services:
   # 前端服務 (React)
   client:
-    build: ./client
+    build:
+      context: ./client
+      target: development
     ports:
-      - "3000:80"
+      - "3000:3000"
     environment:
       - REACT_APP_API_URL=http://localhost:8080
       - NODE_ENV=development
