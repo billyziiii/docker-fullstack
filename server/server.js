@@ -88,6 +88,16 @@ app.get('/', (req, res) => {
   });
 });
 
+// 將根路由改為 API 路由，避免覆蓋前端頁面
+app.get('/api', (req, res) => {
+  res.json({
+    message: '🐳 Docker Fullstack API Server',
+    version: '1.0.0',
+    status: 'running',
+    timestamp: new Date().toISOString()
+  });
+});
+
 // 健康檢查端點
 app.get('/api/health', async (req, res) => {
   try {
