@@ -18,7 +18,7 @@ services:
       - server
     container_name: fullstack_client
 
-  # 後端服務 (Node.js/Go)
+  # 後端服務 (Node.js) - 已移除 Redis 依賴
   server:
     build: ./server
     ports:
@@ -26,7 +26,6 @@ services:
     environment:
       - NODE_ENV=development
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/appdb
-      - REDIS_URL=redis://redis:6379
       - JWT_SECRET=your-jwt-secret-key
       - JWT_EXPIRES_IN=7d
       - CORS_ORIGIN=http://localhost:3000
@@ -35,7 +34,6 @@ services:
       - /app/node_modules
     depends_on:
       - postgres
-      - redis
     container_name: fullstack_server
 
   # PostgreSQL 資料庫
@@ -52,16 +50,6 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./server/database/init.sql:/docker-entrypoint-initdb.d/init.sql
     container_name: fullstack_postgres
-
-  # Redis 緩存
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    container_name: fullstack_redis
 
   # Nginx 反向代理 (生產環境)
   nginx:
@@ -80,7 +68,6 @@ services:
 
 volumes:
   postgres_data:
-  redis_data:
 
 networks:
   default:

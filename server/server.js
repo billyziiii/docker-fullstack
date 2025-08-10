@@ -40,9 +40,8 @@ const SYNC_DEMO_MESSAGE = 'Docker Volume 後端自動重啟正在運行！修改
 console.log('🔥', SYNC_DEMO_MESSAGE, new Date().toISOString());
 console.log('🎯 nodemon 檢測到文件變化，服務器自動重啟中...');
 
-// 數據庫連接
+// 數據庫連接 (移除 Redis)
 const { Pool } = require('pg');
-const redis = require('redis');
 
 // PostgreSQL 連接
 const pool = new Pool({
@@ -52,69 +51,124 @@ const pool = new Pool({
   connectionTimeoutMillis: 2000,
 });
 
-// Redis URL 獲取函數
-function getRedisUrl() {
-  const redisUrl = process.env.REDIS_URL;
-  
-  if (redisUrl) {
-    return redisUrl;
+// PostgreSQL 緩存類 (替代 Redis)
+class PostgreSQLCache {
+  constructor(pool) {
+    this.pool = pool;
+    this.startCleanupInterval();
+    console.log('✅ PostgreSQL Cache initialized');
   }
-  
-  if (process.env.NODE_ENV === 'production') {
-    console.error('❌ REDIS_URL environment variable is required in production');
-    process.exit(1);
+
+  startCleanupInterval() {
+    // 每 5 分鐘清理過期數據
+    setInterval(async () => {
+      try {
+        const result = await this.pool.query('SELECT cleanup_expired_cache() as deleted_count');
+        const deletedCount = result.rows[0].deleted_count;
+        if (deletedCount > 0) {
+          console.log(`🧹 Cleaned up ${deletedCount} expired cache entries`);
+        }
+      } catch (err) {
+        console.error('❌ Cache cleanup error:', err);
+      }
+    }, 5 * 60 * 1000);
   }
-  
-  console.warn('⚠️ Using default Redis URL for development');
-  return 'redis://redis:6379';
+
+  async set(key, value, ttl = null) {
+    try {
+      const expiresAt = ttl ? new Date(Date.now() + ttl * 1000) : null;
+      await this.pool.query(
+        'INSERT INTO cache (key, value, expires_at) VALUES ($1, $2, $3) ON CONFLICT (key) DO UPDATE SET value = $2, expires_at = $3, created_at = CURRENT_TIMESTAMP',
+        [key, JSON.stringify(value), expiresAt]
+      );
+      console.log(`📝 Cache SET: ${key} (TTL: ${ttl || 'never'})`);
+    } catch (err) {
+      console.error('❌ Cache SET error:', err);
+      throw err;
+    }
+  }
+
+  async get(key) {
+    try {
+      const result = await this.pool.query(
+        'SELECT value FROM cache WHERE key = $1 AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)',
+        [key]
+      );
+      const value = result.rows.length > 0 ? JSON.parse(result.rows[0].value) : null;
+      console.log(`📖 Cache GET: ${key} = ${value ? 'HIT' : 'MISS'}`);
+      return value;
+    } catch (err) {
+      console.error('❌ Cache GET error:', err);
+      return null;
+    }
+  }
+
+  async delete(key) {
+    try {
+      const result = await this.pool.query('DELETE FROM cache WHERE key = $1', [key]);
+      console.log(`🗑️ Cache DELETE: ${key} (${result.rowCount} rows affected)`);
+      return result.rowCount > 0;
+    } catch (err) {
+      console.error('❌ Cache DELETE error:', err);
+      return false;
+    }
+  }
+
+  async has(key) {
+    try {
+      const result = await this.pool.query(
+        'SELECT 1 FROM cache WHERE key = $1 AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)',
+        [key]
+      );
+      return result.rows.length > 0;
+    } catch (err) {
+      console.error('❌ Cache HAS error:', err);
+      return false;
+    }
+  }
+
+  async clear() {
+    try {
+      const result = await this.pool.query('DELETE FROM cache');
+      console.log(`🧹 Cache CLEAR: ${result.rowCount} entries removed`);
+      return result.rowCount;
+    } catch (err) {
+      console.error('❌ Cache CLEAR error:', err);
+      return 0;
+    }
+  }
+
+  // 模擬 Redis ping
+  async ping() {
+    try {
+      await this.pool.query('SELECT 1');
+      return 'PONG';
+    } catch (err) {
+      throw new Error('Cache ping failed: ' + err.message);
+    }
+  }
+
+  // 獲取緩存統計信息
+  async getStats() {
+    try {
+      const result = await this.pool.query(`
+        SELECT 
+          COUNT(*) as total_entries,
+          COUNT(CASE WHEN expires_at IS NULL THEN 1 END) as permanent_entries,
+          COUNT(CASE WHEN expires_at > CURRENT_TIMESTAMP THEN 1 END) as active_entries,
+          COUNT(CASE WHEN expires_at <= CURRENT_TIMESTAMP THEN 1 END) as expired_entries
+        FROM cache
+      `);
+      return result.rows[0];
+    } catch (err) {
+      console.error('❌ Cache stats error:', err);
+      return null;
+    }
+  }
 }
 
-// Redis 連接改進版本
-const redisUrl = getRedisUrl();
-console.log('🔗 Connecting to Redis:', redisUrl.replace(/\/\/.*@/, '//***:***@'));
-
-const redisClient = redis.createClient({
-  url: redisUrl,
-  retry_strategy: (options) => {
-    if (options.error && options.error.code === 'ECONNREFUSED') {
-      console.error('❌ Redis server refused connection');
-    }
-    if (options.total_retry_time > 1000 * 60 * 60) {
-      console.error('❌ Redis retry time exhausted');
-      return new Error('Retry time exhausted');
-    }
-    if (options.attempt > 10) {
-      console.error('❌ Redis retry attempts exhausted');
-      return undefined;
-    }
-    return Math.min(options.attempt * 100, 3000);
-  }
-});
-
-redisClient.on('error', (err) => {
-  console.error('❌ Redis Client Error:', err);
-  console.error('🔍 Redis URL:', redisUrl.replace(/\/\/.*@/, '//***:***@'));
-});
-
-redisClient.on('connect', () => {
-  console.log('✅ Connected to Redis');
-});
-
-redisClient.on('ready', () => {
-  console.log('🚀 Redis client ready');
-});
-
-redisClient.on('end', () => {
-  console.log('🔌 Redis connection ended');
-});
-
-// 連接到 Redis
-redisClient.connect().catch((err) => {
-  console.error('❌ Failed to connect to Redis:', err);
-  if (process.env.NODE_ENV === 'production') {
-    process.exit(1);
-  }
-});
+// 創建緩存實例
+const pgCache = new PostgreSQLCache(pool);
 
 // 測試數據庫連接
 pool.connect((err, client, release) => {
@@ -132,6 +186,7 @@ app.get('/', (req, res) => {
     message: '🐳 Docker Fullstack API Server',
     version: '1.0.0',
     status: 'running',
+    cache: 'PostgreSQL',
     timestamp: new Date().toISOString()
   });
 });
@@ -142,27 +197,32 @@ app.get('/api', (req, res) => {
     message: '🐳 Docker Fullstack API Server',
     version: '1.0.0',
     status: 'running',
+    cache: 'PostgreSQL',
     timestamp: new Date().toISOString()
   });
 });
 
-// 健康檢查端點
+// 健康檢查端點 (移除 Redis 檢查)
 app.get('/api/health', async (req, res) => {
   try {
     // 檢查 PostgreSQL 連接
     const pgResult = await pool.query('SELECT NOW()');
     
-    // 檢查 Redis 連接
-    await redisClient.ping();
+    // 檢查緩存連接
+    await pgCache.ping();
+    
+    // 獲取緩存統計
+    const cacheStats = await pgCache.getStats();
     
     res.json({
       status: 'healthy',
       message: 'All services are running',
       services: {
         database: 'connected',
-        redis: 'connected',
+        cache: 'connected (PostgreSQL)',
         server: 'running'
       },
+      cache_stats: cacheStats,
       timestamp: pgResult.rows[0].now
     });
   } catch (error) {
@@ -172,6 +232,39 @@ app.get('/api/health', async (req, res) => {
       message: 'Service check failed',
       error: error.message,
       timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// 緩存管理 API
+app.get('/api/cache/stats', async (req, res) => {
+  try {
+    const stats = await pgCache.getStats();
+    res.json({
+      success: true,
+      stats: stats
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get cache stats',
+      error: error.message
+    });
+  }
+});
+
+app.delete('/api/cache/clear', async (req, res) => {
+  try {
+    const deletedCount = await pgCache.clear();
+    res.json({
+      success: true,
+      message: `Cleared ${deletedCount} cache entries`
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Failed to clear cache',
+      error: error.message
     });
   }
 });
@@ -198,47 +291,46 @@ app.post('/api/auth/register', async (req, res) => {
     // 檢查用戶名是否已存在
     const existingUser = await pool.query('SELECT id FROM users WHERE username = $1', [username]);
     if (existingUser.rows.length > 0) {
-      return res.status(409).json({
+      return res.status(400).json({
         success: false,
         message: '用戶名已存在'
       });
     }
 
     // 加密密碼
-    const hashedPassword = await bcrypt.hash(password, 12);
-    
-    // 創建用戶，初始餘額為1000，使用用戶名作為默認email
+    const saltRounds = 12;
+    const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+    // 創建用戶
     const result = await pool.query(
-      'INSERT INTO users (username, password, email, balance) VALUES ($1, $2, $3, $4) RETURNING id, username, balance, created_at',
-      [username, hashedPassword, `${username}@example.com`, 1000]
+      'INSERT INTO users (username, password, email) VALUES ($1, $2, $3) RETURNING id, username, balance',
+      [username, hashedPassword, `${username}@example.com`]
     );
 
     const user = result.rows[0];
     
-    // 生成 JWT token
-    const token = jwt.sign(
-      { userId: user.id, username: user.username },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN }
-    );
+    // 緩存用戶信息
+    await pgCache.set(`user:${user.id}`, {
+      id: user.id,
+      username: user.username,
+      balance: user.balance
+    }, 3600); // 1小時過期
 
-    res.status(201).json({
+    res.json({
       success: true,
       message: '註冊成功',
-      data: {
-        user: {
-          id: user.id,
-          username: user.username,
-          balance: user.balance
-        },
-        token
+      user: {
+        id: user.id,
+        username: user.username,
+        balance: user.balance
       }
     });
   } catch (error) {
-    console.error('用戶註冊錯誤:', error);
+    console.error('Registration error:', error);
     res.status(500).json({
       success: false,
-      message: '服務器內部錯誤'
+      message: '註冊失敗',
+      error: error.message
     });
   }
 });
@@ -255,17 +347,28 @@ app.post('/api/auth/login', async (req, res) => {
       });
     }
 
-    // 查找用戶
-    const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
-    if (result.rows.length === 0) {
-      return res.status(401).json({
-        success: false,
-        message: '用戶名或密碼錯誤'
-      });
+    // 先檢查緩存
+    const cachedUser = await pgCache.get(`login:${username}`);
+    let user;
+    
+    if (cachedUser) {
+      user = cachedUser;
+      console.log('🚀 User login from cache');
+    } else {
+      // 從數據庫查詢用戶
+      const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+      if (result.rows.length === 0) {
+        return res.status(401).json({
+          success: false,
+          message: '用戶名或密碼錯誤'
+        });
+      }
+      user = result.rows[0];
+      
+      // 緩存用戶登入信息
+      await pgCache.set(`login:${username}`, user, 1800); // 30分鐘過期
     }
 
-    const user = result.rows[0];
-    
     // 驗證密碼
     const isValidPassword = await bcrypt.compare(password, user.password);
     if (!isValidPassword) {
@@ -275,169 +378,198 @@ app.post('/api/auth/login', async (req, res) => {
       });
     }
 
-    // 生成 JWT token
+    // 生成 JWT
     const token = jwt.sign(
       { userId: user.id, username: user.username },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN }
+      process.env.JWT_SECRET || 'your-secret-key',
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
+
+    // 緩存用戶會話
+    await pgCache.set(`session:${user.id}`, {
+      userId: user.id,
+      username: user.username,
+      loginTime: new Date().toISOString()
+    }, 7 * 24 * 3600); // 7天過期
 
     res.json({
       success: true,
       message: '登入成功',
-      data: {
-        user: {
-          id: user.id,
-          username: user.username,
-          balance: user.balance
-        },
-        token
+      token,
+      user: {
+        id: user.id,
+        username: user.username,
+        balance: user.balance
       }
     });
   } catch (error) {
-    console.error('用戶登入錯誤:', error);
+    console.error('Login error:', error);
     res.status(500).json({
       success: false,
-      message: '服務器內部錯誤'
+      message: '登入失敗',
+      error: error.message
     });
   }
 });
 
 // JWT 驗證中間件
-const authenticateToken = (req, res, next) => {
+const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
     return res.status(401).json({
       success: false,
-      message: '需要登入才能訪問'
+      message: '需要提供訪問令牌'
     });
   }
 
-  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
-    if (err) {
-      return res.status(403).json({
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    
+    // 檢查會話緩存
+    const session = await pgCache.get(`session:${decoded.userId}`);
+    if (!session) {
+      return res.status(401).json({
         success: false,
-        message: 'Token 無效或已過期'
+        message: '會話已過期，請重新登入'
       });
     }
-    req.user = user;
+    
+    req.user = decoded;
     next();
-  });
+  } catch (error) {
+    return res.status(403).json({
+      success: false,
+      message: '無效的訪問令牌'
+    });
+  }
 };
 
-// 獲取用戶餘額 API
-app.get('/api/user/balance', authenticateToken, async (req, res) => {
+// 獲取用戶資料 API
+app.get('/api/user/profile', authenticateToken, async (req, res) => {
   try {
-    const result = await pool.query('SELECT balance FROM users WHERE id = $1', [req.user.userId]);
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: '用戶不存在'
-      });
+    // 先檢查緩存
+    const cachedUser = await pgCache.get(`user:${req.user.userId}`);
+    let user;
+    
+    if (cachedUser) {
+      user = cachedUser;
+      console.log('🚀 User profile from cache');
+    } else {
+      const result = await pool.query(
+        'SELECT id, username, balance, created_at FROM users WHERE id = $1',
+        [req.user.userId]
+      );
+      
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: '用戶不存在'
+        });
+      }
+      
+      user = result.rows[0];
+      
+      // 緩存用戶資料
+      await pgCache.set(`user:${user.id}`, user, 3600); // 1小時過期
     }
 
     res.json({
       success: true,
-      data: {
-        balance: result.rows[0].balance
-      }
+      user: user
     });
   } catch (error) {
-    console.error('獲取餘額錯誤:', error);
+    console.error('Get profile error:', error);
     res.status(500).json({
       success: false,
-      message: '服務器內部錯誤'
+      message: '獲取用戶資料失敗',
+      error: error.message
     });
   }
 });
 
-// 拉霸機遊戲 API
+// 老虎機遊戲 API
 app.post('/api/game/slot', authenticateToken, async (req, res) => {
   try {
-    const { bet } = req.body;
+    const { betAmount } = req.body;
+    const userId = req.user.userId;
     
-    if (!bet || bet <= 0) {
+    if (!betAmount || betAmount <= 0) {
       return res.status(400).json({
         success: false,
         message: '下注金額必須大於0'
       });
     }
 
-    // 檢查用戶餘額
-    const userResult = await pool.query('SELECT balance FROM users WHERE id = $1', [req.user.userId]);
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: '用戶不存在'
-      });
-    }
-
-    const currentBalance = userResult.rows[0].balance;
-    if (currentBalance < bet) {
+    // 獲取用戶餘額
+    const userResult = await pool.query('SELECT balance FROM users WHERE id = $1', [userId]);
+    const user = userResult.rows[0];
+    
+    if (user.balance < betAmount) {
       return res.status(400).json({
         success: false,
         message: '餘額不足'
       });
     }
 
-    // 生成拉霸機結果 (3個轉輪，每個有7種F1符號)
-    const symbols = ['⛽', '🛞', '🔧', '⚡', '🏁', '🏆', '🏎️'];
+    // 生成隨機結果
+    const symbols = ['🍒', '🍊', '🍋', '🍇', '🔔', '⭐', '💎'];
     const result = [
       symbols[Math.floor(Math.random() * symbols.length)],
       symbols[Math.floor(Math.random() * symbols.length)],
       symbols[Math.floor(Math.random() * symbols.length)]
     ];
 
-    // 計算獲勝倍數
-    let multiplier = 0;
+    // 計算獎金
+    let winAmount = 0;
     if (result[0] === result[1] && result[1] === result[2]) {
       // 三個相同
-      switch (result[0]) {
-        case '🏎️': multiplier = 10; break;  // F1賽車 (冠軍)
-        case '🏆': multiplier = 8; break;   // 冠軍獎盃 (頒獎台)
-        case '🏁': multiplier = 6; break;   // 格子旗
-        case '⚡': multiplier = 4; break;   // 閃電 (極速)
-        case '🔧': multiplier = 3; break;   // 扳手 (維修)
-        case '🛞': multiplier = 2; break;   // 輪胎
-        case '⛽': multiplier = 1.5; break; // 燃料
-      }
+      if (result[0] === '💎') winAmount = betAmount * 10;
+      else if (result[0] === '⭐') winAmount = betAmount * 5;
+      else if (result[0] === '🔔') winAmount = betAmount * 3;
+      else winAmount = betAmount * 2;
     } else if (result[0] === result[1] || result[1] === result[2] || result[0] === result[2]) {
       // 兩個相同
-      multiplier = 0.5;
+      winAmount = Math.floor(betAmount * 0.5);
     }
 
-    const winAmount = Math.floor(bet * multiplier);
-    const newBalance = currentBalance - bet + winAmount;
-    const isWin = winAmount > bet;
-
     // 更新用戶餘額
-    await pool.query('UPDATE users SET balance = $1 WHERE id = $2', [newBalance, req.user.userId]);
+    const newBalance = user.balance - betAmount + winAmount;
+    await pool.query('UPDATE users SET balance = $1 WHERE id = $2', [newBalance, userId]);
 
     // 記錄遊戲歷史
     await pool.query(
-      'INSERT INTO game_history (user_id, game_type, bet_amount, win_amount, result, created_at) VALUES ($1, $2, $3, $4, $5, NOW())',
-      [req.user.userId, 'slot', bet, winAmount, JSON.stringify(result)]
+      'INSERT INTO game_history (user_id, game_type, bet_amount, win_amount, result) VALUES ($1, $2, $3, $4, $5)',
+      [userId, 'slot', betAmount, winAmount, JSON.stringify(result)]
     );
+
+    // 更新緩存中的用戶餘額
+    await pgCache.delete(`user:${userId}`);
+    
+    // 緩存遊戲結果
+    await pgCache.set(`game:${userId}:latest`, {
+      result,
+      betAmount,
+      winAmount,
+      newBalance,
+      timestamp: new Date().toISOString()
+    }, 300); // 5分鐘過期
 
     res.json({
       success: true,
-      data: {
-        result,
-        bet,
-        winAmount,
-        isWin,
-        multiplier,
-        newBalance,
-        message: isWin ? `恭喜！您贏得了 ${winAmount} 金幣！` : '很遺憾，這次沒有中獎。'
-      }
+      result,
+      betAmount,
+      winAmount,
+      newBalance,
+      message: winAmount > 0 ? `恭喜！您贏得了 ${winAmount} 金幣！` : '很遺憾，這次沒有中獎。'
     });
   } catch (error) {
-    console.error('拉霸機遊戲錯誤:', error);
+    console.error('Slot game error:', error);
     res.status(500).json({
       success: false,
-      message: '服務器內部錯誤'
+      message: '遊戲失敗',
+      error: error.message
     });
   }
 });
@@ -445,35 +577,59 @@ app.post('/api/game/slot', authenticateToken, async (req, res) => {
 // 獲取遊戲歷史 API
 app.get('/api/game/history', authenticateToken, async (req, res) => {
   try {
-    const result = await pool.query(
-      'SELECT * FROM game_history WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20',
-      [req.user.userId]
+    const userId = req.user.userId;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = parseInt(req.query.offset) || 0;
+    
+    // 先檢查緩存
+    const cacheKey = `history:${userId}:${limit}:${offset}`;
+    const cachedHistory = await pgCache.get(cacheKey);
+    
+    if (cachedHistory) {
+      console.log('🚀 Game history from cache');
+      return res.json({
+        success: true,
+        history: cachedHistory.history,
+        total: cachedHistory.total
+      });
+    }
+    
+    // 從數據庫獲取
+    const historyResult = await pool.query(
+      'SELECT * FROM game_history WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3',
+      [userId, limit, offset]
     );
-
+    
+    const countResult = await pool.query(
+      'SELECT COUNT(*) FROM game_history WHERE user_id = $1',
+      [userId]
+    );
+    
+    const history = historyResult.rows;
+    const total = parseInt(countResult.rows[0].count);
+    
+    // 緩存結果
+    await pgCache.set(cacheKey, { history, total }, 300); // 5分鐘過期
+    
     res.json({
       success: true,
-      data: result.rows
+      history,
+      total
     });
   } catch (error) {
-    console.error('獲取遊戲歷史錯誤:', error);
+    console.error('Get game history error:', error);
     res.status(500).json({
       success: false,
-      message: '服務器內部錯誤'
+      message: '獲取遊戲歷史失敗',
+      error: error.message
     });
   }
 });
 
-// 前端路由處理 (用於 Render 部署)
+// 生產環境靜態文件處理
 if (process.env.NODE_ENV === 'production') {
+  // 處理前端路由
   app.get('*', (req, res) => {
-    // 如果是 API 路由，返回 404
-    if (req.path.startsWith('/api/')) {
-      return res.status(404).json({
-        success: false,
-        message: 'API endpoint not found'
-      });
-    }
-    // 否則返回前端應用
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
   });
 } else {
@@ -495,18 +651,18 @@ app.use((error, req, res, next) => {
   });
 });
 
-// 優雅關閉
+// 優雅關閉 (移除 Redis)
 process.on('SIGTERM', async () => {
   console.log('SIGTERM received, shutting down gracefully');
   await pool.end();
-  await redisClient.quit();
+  console.log('✅ PostgreSQL connection closed');
   process.exit(0);
 });
 
 process.on('SIGINT', async () => {
   console.log('SIGINT received, shutting down gracefully');
   await pool.end();
-  await redisClient.quit();
+  console.log('✅ PostgreSQL connection closed');
   process.exit(0);
 });
 
@@ -514,29 +670,5 @@ process.on('SIGINT', async () => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server is running on port ${PORT}`);
   console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🗄️ Cache: PostgreSQL`);
 });
-
-// 刪除或註釋掉以下重複的 Redis 連接代碼
-/*
-// Redis 連接重試函數
-const connectRedis = async (retries = 5, delay = 2000) => {
-  for (let i = 0; i < retries; i++) {
-    try {
-      await redisClient.connect();
-      console.log('✅ Connected to Redis');
-      return;
-    } catch (err) {
-      console.error(`❌ Redis connection attempt ${i + 1} failed:`, err.message);
-      if (i === retries - 1) {
-        console.error('🚨 All Redis connection attempts failed');
-        throw err;
-      }
-      console.log(`⏳ Retrying in ${delay}ms...`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
-  }
-};
-
-// 使用重試機制連接
-connectRedis().catch(console.error);
-*/
