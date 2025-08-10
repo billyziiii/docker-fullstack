@@ -1,0 +1,71 @@
+services:
+  # Web Service (Frontend + Backend)
+  - type: web
+    name: f1-racing-casino
+    env: docker
+    dockerfilePath: ./Dockerfile.render
+    region: singapore
+    plan: starter
+    branch: main
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: DATABASE_URL
+        fromDatabase:
+          name: f1-racing-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: f1-racing-redis
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      - key: CORS_ORIGIN
+        value: https://f1-racing-casino.onrender.com
+      - key: BCRYPT_ROUNDS
+        value: 12
+      - key: RATE_LIMIT_WINDOW_MS
+        value: 900000
+      - key: RATE_LIMIT_MAX_REQUESTS
+        value: 100
+      - key: LOG_LEVEL
+        value: info
+
+  # PostgreSQL Database
+  - type: pserv
+    name: f1-racing-postgres
+    env: docker
+    dockerfilePath: ./database/Dockerfile.postgres
+    region: singapore
+    plan: starter
+    disk:
+      name: postgres-data
+      mountPath: /var/lib/postgresql/data
+      sizeGB: 1
+    envVars:
+      - key: POSTGRES_DB
+        value: appdb
+      - key: POSTGRES_USER
+        value: postgres
+      - key: POSTGRES_PASSWORD
+        generateValue: true
+
+  # Redis Cache
+  - type: redis
+    name: f1-racing-redis
+    region: singapore
+    plan: starter
+    maxmemoryPolicy: allkeys-lru
+
+databases:
+  - name: f1-racing-postgres
+    databaseName: appdb
+    user: postgres
+    region: singapore
+    plan: starter
