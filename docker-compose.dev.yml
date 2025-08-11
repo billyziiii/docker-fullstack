@@ -6,7 +6,7 @@ services:
     build:
       context: ./client
       dockerfile: Dockerfile
-      target: development  # 使用開發階段
+      target: development
     ports:
       - "3000:3000"
     volumes:
@@ -19,34 +19,29 @@ services:
     depends_on:
       - server
     container_name: fullstack_client_dev
-    stdin_open: true  # 支持交互式輸入
-    tty: true         # 分配偽終端
+    stdin_open: true
+    tty: true
 
   # 後端服務 (Node.js) - 開發模式
   server:
     build:
       context: ./server
       dockerfile: Dockerfile
-      target: development  # 使用開發階段
+      target: development
     ports:
       - "8080:8080"
     environment:
       - NODE_ENV=development
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/appdb
-      - REDIS_URL=redis://redis:6379
       - JWT_SECRET=your-jwt-secret-key
       - JWT_EXPIRES_IN=7d
       - CORS_ORIGIN=http://localhost:3000
     volumes:
-      # 實時同步源代碼
       - ./server:/app
-      # 排除 node_modules 避免衝突
       - /app/node_modules
     depends_on:
       - postgres
-      - redis
     container_name: fullstack_server_dev
-    # 使用 nodemon 實現自動重啟
     command: npx nodemon server.js
 
   # PostgreSQL 資料庫
@@ -64,19 +59,8 @@ services:
       - ./server/database/init.sql:/docker-entrypoint-initdb.d/init.sql
     container_name: fullstack_postgres_dev
 
-  # Redis 緩存
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_dev_data:/data
-    container_name: fullstack_redis_dev
-
 volumes:
   postgres_dev_data:
-  redis_dev_data:
 
 networks:
   default:

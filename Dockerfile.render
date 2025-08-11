@@ -35,6 +35,7 @@ RUN npm ci --only=production && npm cache clean --force
 COPY server/ ./
 
 # Copy built frontend from previous stage
+# 確保這行存在
 COPY --from=frontend-build /app/client/build ./public
 
 # Create non-root user for security

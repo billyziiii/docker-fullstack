@@ -58,11 +58,11 @@ function App() {
     }
   };
 
-  const handleRegister = async (username, password) => {
+  const handleRegister = async (username, email, password) => {
     try {
       setLoading(true);
       setError('');
-      const response = await axios.post('/api/auth/register', { username, password });
+      const response = await axios.post('/api/auth/register', { username, email, password });
       
       if (response.data.success) {
         const { user, token } = response.data.data;
@@ -187,6 +187,7 @@ function LoginPage({ onLogin, onSwitchToRegister, loading, error }) {
 // 註冊頁面組件
 function RegisterPage({ onRegister, onSwitchToLogin, loading, error }) {
   const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [localError, setLocalError] = useState('');
@@ -194,6 +195,11 @@ function RegisterPage({ onRegister, onSwitchToLogin, loading, error }) {
   const handleSubmit = (e) => {
     e.preventDefault();
     setLocalError('');
+    
+    if (!email || !email.includes('@')) {
+      setLocalError('請輸入有效的電子郵件地址');
+      return;
+    }
     
     if (password !== confirmPassword) {
       setLocalError('密碼確認不匹配');
@@ -205,8 +211,8 @@ function RegisterPage({ onRegister, onSwitchToLogin, loading, error }) {
       return;
     }
     
-    if (username && password) {
-      onRegister(username, password);
+    if (username && email && password) {
+      onRegister(username, email, password);
     }
   };
 
@@ -221,6 +227,15 @@ function RegisterPage({ onRegister, onSwitchToLogin, loading, error }) {
               placeholder="用戶名"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
+              required
+            />
+          </div>
+          <div className="form-group">
+            <input
+              type="email"
+              placeholder="電子郵件"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
               required
             />
           </div>

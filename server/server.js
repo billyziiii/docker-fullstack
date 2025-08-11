@@ -35,7 +35,7 @@ if (process.env.NODE_ENV === 'production') {
   app.use(express.static(path.join(__dirname, 'public')));
 }
 
-// 🔥 實時同步演示 - 後端自動重啟功能 (已更新！)
+// 🔥 實時同步演示 - 後端自動重啟功能
 const SYNC_DEMO_MESSAGE = 'Docker Volume 後端自動重啟正在運行！修改已生效！';
 console.log('🔥', SYNC_DEMO_MESSAGE, new Date().toISOString());
 console.log('🎯 nodemon 檢測到文件變化，服務器自動重啟中...');
@@ -54,122 +54,149 @@ const pool = new Pool({
 // 測試數據庫連接
 pool.connect((err, client, release) => {
   if (err) {
-    console.error('❌ Error connecting to PostgreSQL:', err.stack);
+    console.error('❌ 數據庫連接失敗:', err.stack);
   } else {
-    console.log('✅ Connected to PostgreSQL');
+    console.log('✅ 數據庫連接成功');
     release();
   }
 });
 
-// 路由
+// 根路由
 app.get('/', (req, res) => {
-  res.json({
-    message: '🐳 Docker Fullstack API Server',
-    version: '1.0.0',
-    status: 'running',
-    cache: 'disabled',
-    timestamp: new Date().toISOString()
-  });
+  if (process.env.NODE_ENV === 'production') {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  } else {
+    res.json({
+      message: '🚀 Docker 全端應用後端 API 服務器運行中！',
+      timestamp: new Date().toISOString(),
+      syncDemo: SYNC_DEMO_MESSAGE
+    });
+  }
 });
 
-// 將根路由改為 API 路由，避免覆蓋前端頁面
+// API 根路由
 app.get('/api', (req, res) => {
   res.json({
-    message: '🐳 Docker Fullstack API Server',
+    message: '🎯 API 服務正常運行',
     version: '1.0.0',
-    status: 'running',
-    cache: 'disabled',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    endpoints: ['/api/health', '/api/auth/register', '/api/auth/login', '/api/user/profile', '/api/game/slot', '/api/game/history']
   });
 });
 
 // 健康檢查端點
 app.get('/api/health', async (req, res) => {
   try {
-    // 檢查 PostgreSQL 連接
-    const pgResult = await pool.query('SELECT NOW()');
+    // 檢查數據庫連接
+    const client = await pool.connect();
+    await client.query('SELECT NOW()');
+    client.release();
     
     res.json({
       status: 'healthy',
-      message: 'All services are running',
-      services: {
-        database: 'connected',
-        cache: 'disabled',
-        server: 'running'
-      },
-      timestamp: pgResult.rows[0].now
+      timestamp: new Date().toISOString(),
+      database: 'connected',
+      uptime: process.uptime()
     });
   } catch (error) {
-    console.error('Health check failed:', error);
-    res.status(503).json({
+    res.status(500).json({
       status: 'unhealthy',
-      message: 'Service check failed',
-      error: error.message,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      database: 'disconnected',
+      error: error.message
     });
   }
 });
 
-// 用戶註冊 API
+// 用戶註冊
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { username, password, email } = req.body;
     
-    if (!username || !password) {
+    if (!username || !password || !email) {
       return res.status(400).json({
         success: false,
-        message: '用戶名和密碼為必填項'
+        message: '用戶名、密碼和郵箱不能為空'
       });
     }
-
+    
     if (password.length < 6) {
       return res.status(400).json({
         success: false,
-        message: '密碼長度至少6位'
+        message: '密碼長度至少需要6個字符'
       });
     }
-
+    
     // 檢查用戶名是否已存在
-    const existingUser = await pool.query('SELECT id FROM users WHERE username = $1', [username]);
+    const existingUser = await pool.query(
+      'SELECT id FROM users WHERE username = $1',
+      [username]
+    );
+    
     if (existingUser.rows.length > 0) {
       return res.status(400).json({
         success: false,
         message: '用戶名已存在'
       });
     }
-
-    // 加密密碼
-    const saltRounds = 12;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
-
-    // 創建用戶
-    const result = await pool.query(
-      'INSERT INTO users (username, password, email) VALUES ($1, $2, $3) RETURNING id, username, balance',
-      [username, hashedPassword, `${username}@example.com`]
+    
+    // 檢查郵箱是否已存在
+    const existingEmail = await pool.query(
+      'SELECT id FROM users WHERE email = $1',
+      [email]
     );
-
-    const user = result.rows[0];
-
-    res.json({
+    
+    if (existingEmail.rows.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: '郵箱已被使用'
+      });
+    }
+    
+    // 加密密碼
+    const saltRounds = parseInt(process.env.BCRYPT_ROUNDS) || 12;
+    const hashedPassword = await bcrypt.hash(password, saltRounds);
+    
+    // 創建新用戶
+    const newUser = await pool.query(
+      'INSERT INTO users (username, password, email, balance) VALUES ($1, $2, $3, $4) RETURNING id, username, email, balance, created_at',
+      [username, hashedPassword, email, 1000] // 新用戶初始餘額 1000
+    );
+    
+    const user = newUser.rows[0];
+    
+    // 生成 JWT token
+    const token = jwt.sign(
+      { userId: user.id, username: user.username },
+      process.env.JWT_SECRET || 'your-secret-key',
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    );
+    
+    res.status(201).json({
       success: true,
       message: '註冊成功',
-      user: {
-        id: user.id,
-        username: user.username,
-        balance: user.balance
+      data: {
+        user: {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          balance: user.balance,
+          createdAt: user.created_at
+        },
+        token
       }
     });
+    
   } catch (error) {
-    console.error('Registration error:', error);
+    console.error('註冊錯誤:', error);
     res.status(500).json({
       success: false,
-      message: '註冊失敗',
-      error: error.message
+      message: '服務器內部錯誤'
     });
   }
 });
 
-// 用戶登入 API
+// 用戶登入
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -177,53 +204,61 @@ app.post('/api/auth/login', async (req, res) => {
     if (!username || !password) {
       return res.status(400).json({
         success: false,
-        message: '用戶名和密碼為必填項'
+        message: '用戶名和密碼不能為空'
       });
     }
-
-    // 從數據庫查詢用戶
-    const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
-    if (result.rows.length === 0) {
+    
+    // 查找用戶
+    const userResult = await pool.query(
+      'SELECT id, username, password, balance, created_at FROM users WHERE username = $1',
+      [username]
+    );
+    
+    if (userResult.rows.length === 0) {
       return res.status(401).json({
         success: false,
         message: '用戶名或密碼錯誤'
       });
     }
     
-    const user = result.rows[0];
-
+    const user = userResult.rows[0];
+    
     // 驗證密碼
     const isValidPassword = await bcrypt.compare(password, user.password);
+    
     if (!isValidPassword) {
       return res.status(401).json({
         success: false,
         message: '用戶名或密碼錯誤'
       });
     }
-
-    // 生成 JWT
+    
+    // 生成 JWT token
     const token = jwt.sign(
       { userId: user.id, username: user.username },
       process.env.JWT_SECRET || 'your-secret-key',
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
-
+    
     res.json({
       success: true,
       message: '登入成功',
-      token,
-      user: {
-        id: user.id,
-        username: user.username,
-        balance: user.balance
+      data: {
+        user: {
+          id: user.id,
+          username: user.username,
+          balance: user.balance,
+          createdAt: user.created_at
+        },
+        token
       }
     });
+    
   } catch (error) {
-    console.error('Login error:', error);
+    console.error('登入錯誤:', error);
     res.status(500).json({
       success: false,
-      message: '登入失敗',
-      error: error.message
+      message: '服務器內部錯誤'
     });
   }
 });
@@ -232,14 +267,14 @@ app.post('/api/auth/login', async (req, res) => {
 const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
-
+  
   if (!token) {
     return res.status(401).json({
       success: false,
-      message: '需要提供訪問令牌'
+      message: '訪問令牌缺失'
     });
   }
-
+  
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
     req.user = decoded;
@@ -252,149 +287,175 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// 獲取用戶資料 API
+// 獲取用戶資料
 app.get('/api/user/profile', authenticateToken, async (req, res) => {
   try {
-    const result = await pool.query(
+    const userResult = await pool.query(
       'SELECT id, username, balance, created_at FROM users WHERE id = $1',
       [req.user.userId]
     );
     
-    if (result.rows.length === 0) {
+    if (userResult.rows.length === 0) {
       return res.status(404).json({
         success: false,
         message: '用戶不存在'
       });
     }
     
-    const user = result.rows[0];
-
+    const user = userResult.rows[0];
+    
     res.json({
       success: true,
-      user: user
+      data: {
+        user: {
+          id: user.id,
+          username: user.username,
+          balance: user.balance,
+          createdAt: user.created_at
+        }
+      }
     });
+    
   } catch (error) {
-    console.error('Get profile error:', error);
+    console.error('獲取用戶資料錯誤:', error);
     res.status(500).json({
       success: false,
-      message: '獲取用戶資料失敗',
-      error: error.message
+      message: '服務器內部錯誤'
     });
   }
 });
 
-// 老虎機遊戲 API
+// 老虎機遊戲
 app.post('/api/game/slot', authenticateToken, async (req, res) => {
   try {
-    const { betAmount } = req.body;
+    const { bet } = req.body;
     const userId = req.user.userId;
     
-    if (!betAmount || betAmount <= 0) {
+    if (!bet || bet <= 0) {
       return res.status(400).json({
         success: false,
         message: '下注金額必須大於0'
       });
     }
-
-    // 獲取用戶餘額
-    const userResult = await pool.query('SELECT balance FROM users WHERE id = $1', [userId]);
-    const user = userResult.rows[0];
     
-    if (user.balance < betAmount) {
+    // 檢查用戶餘額
+    const userResult = await pool.query(
+      'SELECT balance FROM users WHERE id = $1',
+      [userId]
+    );
+    
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: '用戶不存在'
+      });
+    }
+    
+    const currentBalance = userResult.rows[0].balance;
+    
+    if (currentBalance < bet) {
       return res.status(400).json({
         success: false,
         message: '餘額不足'
       });
     }
-
+    
     // 生成隨機結果
-    const symbols = ['🍒', '🍊', '🍋', '🍇', '🔔', '⭐', '💎'];
+    const symbols = ['🍎', '🍊', '🍋', '🍇', '🍓', '💎'];
     const result = [
       symbols[Math.floor(Math.random() * symbols.length)],
       symbols[Math.floor(Math.random() * symbols.length)],
       symbols[Math.floor(Math.random() * symbols.length)]
     ];
-
+    
     // 計算獎金
     let winAmount = 0;
     if (result[0] === result[1] && result[1] === result[2]) {
       // 三個相同
-      if (result[0] === '💎') winAmount = betAmount * 10;
-      else if (result[0] === '⭐') winAmount = betAmount * 5;
-      else if (result[0] === '🔔') winAmount = betAmount * 3;
-      else winAmount = betAmount * 2;
+      if (result[0] === '💎') {
+        winAmount = bet * 10; // 鑽石獎勵最高
+      } else {
+        winAmount = bet * 5;
+      }
     } else if (result[0] === result[1] || result[1] === result[2] || result[0] === result[2]) {
       // 兩個相同
-      winAmount = Math.floor(betAmount * 0.5);
+      winAmount = bet * 2;
     }
-
+    
+    const netWin = winAmount - bet;
+    const newBalance = currentBalance + netWin;
+    
     // 更新用戶餘額
-    const newBalance = user.balance - betAmount + winAmount;
-    await pool.query('UPDATE users SET balance = $1 WHERE id = $2', [newBalance, userId]);
-
+    await pool.query(
+      'UPDATE users SET balance = $1 WHERE id = $2',
+      [newBalance, userId]
+    );
+    
     // 記錄遊戲歷史
     await pool.query(
       'INSERT INTO game_history (user_id, game_type, bet_amount, win_amount, result) VALUES ($1, $2, $3, $4, $5)',
-      [userId, 'slot', betAmount, winAmount, JSON.stringify(result)]
+      [userId, 'slot', bet, winAmount, JSON.stringify(result)]
     );
-
+    
     res.json({
       success: true,
-      result,
-      betAmount,
-      winAmount,
-      newBalance,
-      message: winAmount > 0 ? `恭喜！您贏得了 ${winAmount} 金幣！` : '很遺憾，這次沒有中獎。'
+      data: {
+        result,
+        bet,
+        winAmount,
+        netWin,
+        newBalance,
+        isWin: winAmount > 0
+      }
     });
+    
   } catch (error) {
-    console.error('Slot game error:', error);
+    console.error('老虎機遊戲錯誤:', error);
     res.status(500).json({
       success: false,
-      message: '遊戲失敗',
-      error: error.message
+      message: '服務器內部錯誤'
     });
   }
 });
 
-// 獲取遊戲歷史 API
+// 獲取遊戲歷史
 app.get('/api/game/history', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
     const limit = parseInt(req.query.limit) || 10;
     const offset = parseInt(req.query.offset) || 0;
     
-    // 從數據庫獲取
     const historyResult = await pool.query(
       'SELECT * FROM game_history WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3',
       [userId, limit, offset]
     );
     
-    const countResult = await pool.query(
-      'SELECT COUNT(*) FROM game_history WHERE user_id = $1',
-      [userId]
-    );
-    
-    const history = historyResult.rows;
-    const total = parseInt(countResult.rows[0].count);
+    const history = historyResult.rows.map(row => ({
+      id: row.id,
+      gameType: row.game_type,
+      betAmount: row.bet_amount,
+      winAmount: row.win_amount,
+      result: JSON.parse(row.result),
+      createdAt: row.created_at
+    }));
     
     res.json({
       success: true,
-      history,
-      total
+      data: { history }
     });
+    
   } catch (error) {
-    console.error('Get game history error:', error);
+    console.error('獲取遊戲歷史錯誤:', error);
     res.status(500).json({
       success: false,
-      message: '獲取遊戲歷史失敗',
-      error: error.message
+      message: '服務器內部錯誤'
     });
   }
 });
 
-// 生產環境靜態文件處理
+// 生產環境的前端路由處理
 if (process.env.NODE_ENV === 'production') {
-  // 處理前端路由
+  // 所有非 API 路由都返回 React 應用
   app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
   });
@@ -408,33 +469,30 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
-// 錯誤處理中間件
+// 全局錯誤處理中間件
 app.use((error, req, res, next) => {
-  console.error('Unhandled error:', error);
+  console.error('全局錯誤:', error);
   res.status(500).json({
-    error: 'Internal server error',
-    message: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong'
+    success: false,
+    message: '服務器內部錯誤'
   });
 });
 
-// 優雅關閉
+// 優雅關閉處理
 process.on('SIGTERM', async () => {
-  console.log('SIGTERM received, shutting down gracefully');
+  console.log('收到 SIGTERM 信號，正在關閉服務器...');
   await pool.end();
-  console.log('✅ PostgreSQL connection closed');
   process.exit(0);
 });
 
 process.on('SIGINT', async () => {
-  console.log('SIGINT received, shutting down gracefully');
+  console.log('收到 SIGINT 信號，正在關閉服務器...');
   await pool.end();
-  console.log('✅ PostgreSQL connection closed');
   process.exit(0);
 });
 
 // 啟動服務器
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Server is running on port ${PORT}`);
-  console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🗄️ Cache: disabled`);
+  console.log(`🚀 服務器運行在端口 ${PORT}`);
+  console.log(`🌍 環境: ${process.env.NODE_ENV || 'development'}`);
 });
